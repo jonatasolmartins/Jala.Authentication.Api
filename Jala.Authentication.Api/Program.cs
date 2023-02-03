@@ -13,35 +13,57 @@ var builder = WebApplication.CreateBuilder(args);
 
 const string cookieScheme = "cookie";
 const string githubScheme = "github";
+
+#region Authentication configuration
 //We specifies that we want to use authentication with the cookie scheme
 builder.Services.AddAuthentication(cookieScheme)
     .AddCookie(cookieScheme, c =>
     {
+        //The domain that will be used to set the cookie
+        c.Cookie.Domain = "localhost";
+        //The name of the cookie
+        c.Cookie.Name = "auth.api";
+        //The path that will be used to set the cookie
+        c.Cookie.Path = "/";
+        //Only allow the cookie to be sent over http
+        c.Cookie.HttpOnly = true;
+        /*
+         Configure how the redirect will be handled when the redirect comes from the same site, and third party sites
+             Lax: only allows the redirect to be sent when the request is a get request
+             Strict: will not allow the redirect to be sent from external sites
+             None: will allow the redirect to be sent from any site
+        */
+        c.Cookie.SameSite = SameSiteMode.Lax;
         //The path that will be used to redirect the user to the login page
         c.LoginPath = "/login2";
+        //Set the expiration time for the cookie
+        c.Cookie.Expiration = TimeSpan.FromSeconds(5);
+        //Will send a new cookie with the same name and value but with a new expiration time when the cookie is about to expire
+        c.SlidingExpiration = true;
+        
         var del = c.Events.OnRedirectToAccessDenied;
-        //If the user tries to access an endpoint that is marked with the premium user or github user policy
-        //we will redirect the user to another endpoint that will handle the authentication process
-        c.Events.OnRedirectToAccessDenied = ctx =>
-        {
-            //If the resource that the user is trying to access is the github endpoint
-            //We will redirect the user to authenticate with github
-            if (ctx.Request.Path.Value.StartsWith("/github"))
-            {
-                return ctx.HttpContext.ChallengeAsync(githubScheme);
-            }
-            //If the resource that the user is trying to access is the premium endpoint
-            //We will redirect the user to addnewclaim endpoint to get the premium claim
-            if (ctx.Request.Path.Value.StartsWith("/premium"))
-            {
-                //If the user is authenticated we will redirect the user to the addnewclaim endpoint
-                if (ctx.HttpContext.User.Identity.IsAuthenticated)
-                {
-                    ctx.HttpContext.Response.Redirect("https://localhost:7090/addnewclaim");
-                    return Task.CompletedTask;
-                }
-            }
-            // Otherwise we will redirect the user to the access denied endpoint
+        // If the user tries to access an endpoint that is marked with the premium user or github user policy
+        // we will redirect the user to another endpoint that will handle the authentication process
+         c.Events.OnRedirectToAccessDenied = ctx =>
+         {
+             //If the resource that the user is trying to access is the github endpoint
+             //We will redirect the user to authenticate with github
+             if (ctx.Request.Path.Value.StartsWith("/github"))
+             {
+                 return ctx.HttpContext.ChallengeAsync(githubScheme);
+             }
+             //If the resource that the user is trying to access is the premium endpoint
+             //We will redirect the user to addnewclaim endpoint to get the premium claim
+             if (ctx.Request.Path.Value.StartsWith("/premium"))
+             {
+                 //If the user is authenticated we will redirect the user to the addnewclaim endpoint
+                 if (ctx.HttpContext.User.Identity.IsAuthenticated)
+                 {
+                     ctx.HttpContext.Response.Redirect("https://localhost:7090/addnewclaim");
+                     return Task.CompletedTask;
+                 }
+             }
+             //Otherwise we will redirect the user to the access denied endpoint
             return del(ctx);
         };
     })
@@ -53,9 +75,9 @@ builder.Services.AddAuthentication(cookieScheme)
         */
         o.SignInScheme = cookieScheme;
         //The client id and secret are the ones we get from the github oauth configuration.
-        o.ClientId = "7cb95687506777cebf23";
+        o.ClientId = builder.Configuration["Github:ClientId"];
         //The client secret is the one we get from the github oauth configuration.
-        o.ClientSecret = "77c3c38da435fe48e77988f1d5cbf91ce07ccfd5";
+        o.ClientSecret = builder.Configuration["Github:ClientSecret"];
         //The endpoint that will be used to get the authorization code
         o.AuthorizationEndpoint = "https://github.com/login/oauth/authorize";
         //The endpoint that will be used to get the access token
@@ -106,6 +128,9 @@ builder.Services.AddAuthentication(cookieScheme)
             ctx.Principal.Identities.First(x => x.AuthenticationType == cookieScheme).AddClaim(new Claim("user", "github"));
         };
     });
+#endregion
+
+#region Authorization Policy
 // Create a authorization rules that will be apply for any request that tries to access an endpoint marked with this policy
 builder.Services.AddAuthorization(builderOptions =>
 {
@@ -126,6 +151,7 @@ builder.Services.AddAuthorization(builderOptions =>
             .RequireClaim("user", "github");
     });
 });
+#endregion
 
 var app = builder.Build();
 
@@ -232,6 +258,10 @@ app.MapGet("/addnewclaim", (HttpContext ctx) =>
     ctx.Response.Redirect($"https://localhost:7090/premium");
     return Results.SignIn(
         principal, 
+        new AuthenticationProperties()
+        {
+            IsPersistent = true
+        },
         authenticationScheme: cookieScheme);
 }).RequireAuthorization();
 
@@ -240,7 +270,8 @@ app.MapGet("/login", (HttpContext ctx) =>
     return Results.Challenge(
         new AuthenticationProperties()
         {
-            RedirectUri = "https://localhost:7090/"
+            RedirectUri = "https://localhost:7090/",
+            IsPersistent = true
         },
         authenticationSchemes: new List<string>() {githubScheme}
     );
@@ -257,7 +288,6 @@ app.MapGet("/github", (HttpContext ctx) =>
 }).RequireAuthorization("github user");
 
 #endregion
-
 
 app.Run();
 
